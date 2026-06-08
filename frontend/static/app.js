@@ -1,4 +1,4 @@
-const BACKEND_URL = 'http://127.0.0.1:8000';
+const BACKEND_URL = (window.__ENV__ && window.__ENV__.BACKEND_URL) || 'http://127.0.0.1:8000';
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 const state = {
