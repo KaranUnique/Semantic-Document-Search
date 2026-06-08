@@ -1,4 +1,7 @@
 import logging
+from dotenv import load_dotenv
+load_dotenv()  # Load backend/.env before any service initializes
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,7 +48,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": "Simple RAG Assistant Backend",
-        "engine": "FastAPI, ChromaDB, Gemini 1.5 Flash"
+        "engine": "FastAPI, ChromaDB, Ollama (local LLM)"
     }
 
 if __name__ == "__main__":

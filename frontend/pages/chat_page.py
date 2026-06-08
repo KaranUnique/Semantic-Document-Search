@@ -2,106 +2,143 @@ import json
 import streamlit as st
 from services.api_client import APIClient
 
+
 def render_chat():
-    """Renders the simple RAG Chat Assistant console."""
     st.markdown(
         """
-        <div class='brand-header-card'>
-            <h1>💬 Chat Assistant</h1>
-            <p>Ask questions about your uploaded documents. Answers include source citations with page numbers and relevance scores.</p>
+        <div style='margin-bottom:16px;'>
+            <div style='font-size:20px; font-weight:700; color:#111318; margin-bottom:3px;'>
+                Chat Assistant
+            </div>
+            <div style='font-size:13px; color:#9EA3AF;'>
+                Ask questions about your uploaded documents.
+            </div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
-    
-    # Initialize chat history in session state
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-    
-    # Display chat history
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            
-            # Render citations for assistant messages
-            if message["role"] == "assistant" and message.get("citations"):
-                st.markdown("<p style='font-size:12px; color:#64748B; font-weight:600; margin-top:10px; margin-bottom:5px;'>Sources & References:</p>", unsafe_allow_html=True)
-                chips_html = ""
-                for c in message["citations"]:
-                    chips_html += f"""
-                    <div class='citation-chip'>
-                        <span class='citation-idx'>{c['index']}</span>
-                        <span>{c['source']} (Page {c['page']})</span>
-                        <span class='citation-score'>Relevance: {c['relevance_score']}%</span>
+
+    st.markdown(
+        """
+        <div class='panel'>
+            <div style='display:flex; align-items:center; justify-content:space-between;
+                        padding:14px 20px; border-bottom:1px solid #F3F3F5;'>
+                <div style='display:flex; align-items:center; gap:10px;'>
+                    <div class='chat-av-ai'>🎙</div>
+                    <div>
+                        <div style='font-size:14px; font-weight:600; color:#111318;'>AI Assistant</div>
+                        <div style='font-size:11px; color:#12B76A; font-weight:500;'>● RAG Active</div>
                     </div>
-                    """
-                st.markdown(chips_html, unsafe_allow_html=True)
-    
-    # Chat input
-    query = st.chat_input("Ask a question about your documents...")
-    
-    if query:
-        # Add user message to chat history
-        st.session_state.chat_history.append({"role": "user", "content": query})
-        
-        # Render user query
-        with st.chat_message("user"):
-            st.markdown(query)
-        
-        # Render assistant response
-        with st.chat_message("assistant"):
-            citations = []
-            
-            try:
-                # Initialize stream
-                token_stream = APIClient.send_chat_message_stream(query)
-                
-                # Intercept first token chunk containing source citations
-                first_chunk = next(token_stream, "")
-                text_start = ""
-                
-                if "[SOURCES_METADATA]:" in first_chunk:
-                    parts = first_chunk.split("\n", 1)
-                    meta_line = parts[0]
-                    text_start = parts[1] if len(parts) > 1 else ""
-                    
-                    json_str = meta_line.replace("[SOURCES_METADATA]:", "").strip()
-                    citations = json.loads(json_str)
-                else:
-                    text_start = first_chunk
-                
-                # Stream writer generator
-                def output_generator():
-                    if text_start:
-                        yield text_start
-                    for token in token_stream:
-                        yield token
-                
-                # Typewriter effect
-                full_answer = st.write_stream(output_generator())
-                
-                # Render citations
-                if citations:
-                    st.markdown("<p style='font-size:12px; color:#64748B; font-weight:600; margin-top:10px; margin-bottom:5px;'>Sources & References:</p>", unsafe_allow_html=True)
-                    chips_html = ""
-                    for c in citations:
-                        chips_html += f"""
-                        <div class='citation-chip'>
-                            <span class='citation-idx'>{c['index']}</span>
-                            <span>{c['source']} (Page {c['page']})</span>
-                            <span class='citation-score'>Relevance: {c['relevance_score']}%</span>
+                </div>
+                <div style='font-size:20px; color:#9EA3AF;'>+</div>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='padding:16px 20px 4px;'>", unsafe_allow_html=True)
+
+    if not st.session_state.chat_history:
+        st.markdown(
+            """
+            <div style='display:flex; gap:10px; align-items:flex-start; margin-bottom:14px;'>
+                <div class='chat-av-ai'>🎙</div>
+                <div>
+                    <div class='chat-ai-bubble'>
+                        Hello! I'm ready to answer questions about your knowledge base.
+                        Upload documents first, then ask me anything.
+                    </div>
+                    <div class='chat-ts'>Just now</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "assistant":
+                st.markdown(
+                    f"""
+                    <div style='display:flex; gap:10px; align-items:flex-start; margin-bottom:14px;'>
+                        <div class='chat-av-ai'>🎙</div>
+                        <div>
+                            <div class='chat-ai-bubble'>{msg['content']}</div>
+                            <div class='chat-ts'>Just now</div>
                         </div>
-                        """
-                    st.markdown(chips_html, unsafe_allow_html=True)
-                
-                # Add assistant message to chat history
-                st.session_state.chat_history.append({
-                    "role": "assistant",
-                    "content": full_answer,
-                    "citations": citations
-                })
-                
-            except StopIteration:
-                st.warning("No response received.")
-            except Exception as stream_err:
-                st.error(f"Failed to stream response: {str(stream_err)}")
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if msg.get("citations"):
+                    chips = "".join(
+                        f"<span class='c-chip'><span class='c-idx'>{c['index']}</span>"
+                        f"{c['source']} p.{c['page']}"
+                        f"<span class='c-score'>{c['relevance_score']}%</span></span>"
+                        for c in msg["citations"]
+                    )
+                    st.markdown(
+                        f"<div style='margin:-8px 0 14px 42px;'>{chips}</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    f"""
+                    <div style='display:flex; gap:10px; flex-direction:row-reverse;
+                                align-items:flex-start; margin-bottom:14px;'>
+                        <div class='chat-av-user'>MT</div>
+                        <div>
+                            <div class='chat-user-bubble'>{msg['content']}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Input
+    st.markdown(
+        "<div style='padding:10px 20px 4px; border-top:1px solid #F3F3F5;'>",
+        unsafe_allow_html=True,
+    )
+
+    query = st.chat_input("Ask a question about your documents…")
+
+    st.markdown(
+        """
+        <p style='font-size:10.5px; color:#9EA3AF; text-align:center; margin:2px 0 12px;'>
+            AI can make mistakes. Verify important information.
+        </p>
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if query:
+        st.session_state.chat_history.append({"role": "user", "content": query})
+        citations, full_answer = [], ""
+        try:
+            stream = APIClient.send_chat_message_stream(query)
+            first = next(stream, "")
+            text_start = ""
+            if "[SOURCES_METADATA]:" in first:
+                parts = first.split("\n", 1)
+                json_str = parts[0].replace("[SOURCES_METADATA]:", "").strip()
+                citations = json.loads(json_str)
+                text_start = parts[1] if len(parts) > 1 else ""
+            else:
+                text_start = first
+            full_answer = text_start + "".join(stream)
+        except Exception as e:
+            full_answer = f"Error: {str(e)}"
+
+        st.session_state.chat_history.append(
+            {"role": "assistant", "content": full_answer, "citations": citations}
+        )
+        st.rerun()
+
+    if st.session_state.chat_history:
+        if st.button("Clear chat", key="clear_chat"):
+            st.session_state.chat_history = []
+            st.rerun()

@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import logging
 from typing import List, Dict, Any
 from datetime import datetime
@@ -18,8 +19,49 @@ doc_processor = DocProcessor()
 vector_store = VectorStoreService()
 rag_service = RAGService(vector_store)
 
-# In-memory document storage (simplified - no database)
-uploaded_documents: List[Dict[str, Any]] = []
+# ── Registry persistence ──────────────────────────────────────────────────────
+REGISTRY_PATH = os.path.join(doc_processor.upload_dir, "_registry.json")
+
+def _load_registry() -> List[Dict[str, Any]]:
+    """Load document registry from disk, rebuilding from ChromaDB if missing."""
+    if os.path.exists(REGISTRY_PATH):
+        try:
+            with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Registry file unreadable, rebuilding: {e}")
+
+    # Rebuild from ChromaDB metadata
+    logger.info("Rebuilding document registry from ChromaDB...")
+    _, metadatas, _ = vector_store.get_all_chunks()
+    seen = {}
+    for meta in metadatas:
+        src = meta.get("source")
+        if src and src not in seen:
+            seen[src] = {
+                "id": len(seen) + 1,
+                "name": src,
+                "file_path": "",
+                "file_type": meta.get("file_type", ""),
+                "size_bytes": 0,
+                "page_count": meta.get("page", 1),
+                "chunk_count": 0,
+                "uploaded_at": datetime.utcnow().isoformat()
+            }
+    docs = list(seen.values())
+    _save_registry(docs)
+    return docs
+
+def _save_registry(docs: List[Dict[str, Any]]) -> None:
+    """Persist the document registry to disk."""
+    try:
+        with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
+            json.dump(docs, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save registry: {e}")
+
+# In-memory document storage — loaded from disk on startup
+uploaded_documents: List[Dict[str, Any]] = _load_registry()
 
 # ==========================================
 # DOCUMENT MANAGEMENT ROUTERS
@@ -28,19 +70,30 @@ uploaded_documents: List[Dict[str, Any]] = []
 @router.post("/documents/upload", status_code=status.HTTP_201_CREATED)
 async def upload_documents(files: List[UploadFile] = File(...)):
     """
-    Uploads and processes documents (PDF, DOCX, PPTX, TXT).
-    Extracts text, chunks it, and stores embeddings in ChromaDB.
+    Uploads and processes documents (PDF, DOCX, PPTX, TXT, MD).
+    Skips duplicates via MD5 hash check, chunks text, and stores embeddings in ChromaDB.
     """
     processed_docs = []
     
     for file in files:
         temp_path = os.path.join(doc_processor.upload_dir, f"temp_{file.filename}")
         try:
-            # Write temp file
+            content = await file.read()
+
+            # Write temp file to compute MD5
             with open(temp_path, "wb") as f:
-                content = await file.read()
                 f.write(content)
-                
+
+            file_md5 = DocProcessor.calculate_md5(temp_path)
+
+            # Duplicate check — skip if same file already uploaded
+            existing = next((d for d in uploaded_documents if d.get("md5") == file_md5), None)
+            if existing:
+                logger.info(f"Skipping duplicate file '{file.filename}' (md5 matches '{existing['name']}')")
+                os.remove(temp_path)
+                processed_docs.append(existing)
+                continue
+
             # Rename to final path
             final_path = os.path.join(doc_processor.upload_dir, f"{int(datetime.utcnow().timestamp())}_{file.filename}")
             os.rename(temp_path, final_path)
@@ -51,7 +104,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             # Add to ChromaDB vector store
             vector_store.add_documents(chunks)
             
-            # Store metadata in memory
+            # Store metadata in memory and persist
             doc_info = {
                 "id": len(uploaded_documents) + 1,
                 "name": file.filename,
@@ -60,9 +113,11 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 "size_bytes": len(content),
                 "page_count": page_count,
                 "chunk_count": len(chunks),
+                "md5": file_md5,
                 "uploaded_at": datetime.utcnow().isoformat()
             }
             uploaded_documents.append(doc_info)
+            _save_registry(uploaded_documents)
             processed_docs.append(doc_info)
             
         except Exception as e:
@@ -96,8 +151,9 @@ def delete_document(doc_id: int):
         if os.path.exists(doc["file_path"]):
             os.remove(doc["file_path"])
             
-        # Remove from in-memory storage
+        # Remove from in-memory storage and persist
         uploaded_documents.remove(doc)
+        _save_registry(uploaded_documents)
         return {"detail": f"Document '{doc['name']}' deleted successfully."}
     except Exception as e:
         logger.error(f"Error deleting document {doc['name']}: {str(e)}")

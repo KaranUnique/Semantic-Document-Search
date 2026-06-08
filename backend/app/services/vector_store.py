@@ -1,4 +1,5 @@
 import os
+import hashlib
 import logging
 from typing import List, Dict, Any, Tuple
 import chromadb
@@ -49,10 +50,11 @@ class VectorStoreService:
         embeddings = []
         
         for idx, chunk in enumerate(chunks):
-            # Create a deterministic and unique chunk ID
+            # Create a collision-safe chunk ID using a hash of the content
             source = chunk["metadata"]["source"]
             chunk_idx = chunk["metadata"]["chunk_index"]
-            chunk_id = f"{source}_chunk_{chunk_idx}"
+            content_hash = hashlib.md5(chunk["text"].encode()).hexdigest()[:8]
+            chunk_id = f"{source}_chunk_{chunk_idx}_{content_hash}"
             
             ids.append(chunk_id)
             documents.append(chunk["text"])

@@ -1,153 +1,166 @@
 import os
+import json
 import logging
+import requests
 from typing import Generator, List, Dict, Any, Tuple
-import google.generativeai as genai
 from backend.app.services.vector_store import VectorStoreService
 
 logger = logging.getLogger("rag_service")
 
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "mistral")
+
+
 class RAGService:
     def __init__(self, vector_store: VectorStoreService):
         self.vector_store = vector_store
-        
-        # Setup Gemini API
-        self.api_key = os.getenv("GEMINI_API_KEY", "")
-        self.api_configured = False
-        
-        if self.api_key and self.api_key != "YOUR_GEMINI_API_KEY_HERE":
-            try:
-                genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel("gemini-1.5-flash")
-                self.api_configured = True
-                logger.info("Gemini API configured successfully.")
-            except Exception as e:
-                logger.error(f"Failed to configure Gemini API: {str(e)}")
-        else:
-            logger.warning("Gemini API key is not set.")
+        self.ollama_available = self._check_ollama()
 
-    def _get_no_llm_error_stream(self) -> Generator[str, None, None]:
-        """Provides an informative streaming message when no LLM is available."""
-        yield "⚠️ **No LLM Available.**\n\n"
-        yield "Please configure Gemini API:\n"
-        yield "1. Get an API key from https://makersuite.google.com/app/apikey\n"
-        yield "2. Set `GEMINI_API_KEY` in `backend/.env`\n"
-        yield "Then restart the application."
-    
-    def _gemini_stream(self, prompt: str) -> Generator[str, None, None]:
-        """Streams generation from Gemini API."""
-        if not self.api_configured:
-            return
-        
+    def _check_ollama(self) -> bool:
+        """Ping Ollama and verify the configured model is pulled."""
         try:
-            logger.info("Generating response using Gemini 1.5 Flash API")
-            response = self.model.generate_content(prompt, stream=True)
-            
-            for token in response:
-                if token.text:
-                    yield token.text
-                    
+            r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3)
+            if r.status_code != 200:
+                logger.warning("Ollama is running but returned non-200 on /api/tags")
+                return False
+            models = [m["name"].split(":")[0] for m in r.json().get("models", [])]
+            if OLLAMA_MODEL not in models:
+                logger.warning(
+                    f"Model '{OLLAMA_MODEL}' not found in Ollama. "
+                    f"Run: ollama pull {OLLAMA_MODEL}"
+                )
+                return False
+            logger.info(f"Ollama ready — using model '{OLLAMA_MODEL}'")
+            return True
         except Exception as e:
-            logger.error(f"Error during Gemini generation: {str(e)}")
-            raise
+            logger.warning(f"Ollama not reachable at {OLLAMA_BASE_URL}: {e}")
+            return False
 
-    def answer_query_stream(self, query: str) -> Tuple[Generator[str, None, None], List[Dict[str, Any]]]:
-        """
-        Retrieves top context chunks using semantic search, constructs a prompt,
-        and yields generative tokens from Gemini 1.5 Flash.
-        Returns the generator and the raw retrieved chunks for UI citation tracking.
-        """
-        # 1. Retrieve chunks using semantic search
+    def _ollama_stream(self, prompt: str) -> Generator[str, None, None]:
+        """Stream tokens from Ollama /api/generate."""
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": True,
+        }
+        with requests.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json=payload,
+            stream=True,
+            timeout=120,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    token = data.get("response", "")
+                    if token:
+                        yield token
+                    if data.get("done"):
+                        break
+                except json.JSONDecodeError:
+                    continue
+
+    def _no_llm_stream(self) -> Generator[str, None, None]:
+        yield (
+            f"⚠️ **Ollama not available.**\n\n"
+            f"Please make sure Ollama is running and the model is pulled:\n\n"
+            f"1. Install Ollama: https://ollama.ai\n"
+            f"2. Pull the model:\n"
+            f"   ```\n   ollama pull {OLLAMA_MODEL}\n   ```\n"
+            f"3. Restart the backend.\n\n"
+            f"Current config: `OLLAMA_MODEL={OLLAMA_MODEL}`, "
+            f"`OLLAMA_BASE_URL={OLLAMA_BASE_URL}`"
+        )
+
+    def answer_query_stream(
+        self, query: str
+    ) -> Tuple[Generator[str, None, None], List[Dict[str, Any]]]:
+        """Retrieve context chunks and stream an answer from the local LLM."""
         chunks = self.vector_store.semantic_search(query, top_k=5)
-        
+
         if not chunks:
-            # Fallback if no documents exist in store
-            def empty_corpus_generator():
-                yield "No documents have been uploaded to the database yet. Please go to the **Upload Documents** page and ingest files before starting chat assistant."
-            return empty_corpus_generator(), []
-        
-        # Check if LLM is available
-        if not self.api_configured:
-            return self._get_no_llm_error_stream(), chunks
-            
-        # 2. Build context block with page citations
+            def _no_docs():
+                yield "No documents have been uploaded yet. Please upload files on the Home page first."
+            return _no_docs(), []
+
+        # Re-check Ollama liveness on each request (model may have been loaded after startup)
+        if not self.ollama_available:
+            self.ollama_available = self._check_ollama()
+
+        if not self.ollama_available:
+            return self._no_llm_stream(), chunks
+
         context_blocks = []
         for idx, chunk in enumerate(chunks):
-            ref_id = idx + 1
             context_blocks.append(
-                f"[{ref_id}] File: {chunk['source']} (Page: {chunk['page']})\n"
+                f"[{idx+1}] File: {chunk['source']} (Page: {chunk['page']})\n"
                 f"Content: {chunk['text']}"
             )
         context_str = "\n\n".join(context_blocks)
-        
-        # 3. Design precise system context prompt
-        prompt = f"""You are a helpful and precise Knowledge Assistant.
-Use the provided context to answer the user query as concisely and factually as possible.
 
-INSTRUCTIONS:
-1. Base your answer strictly on the provided Context.
-2. If the answer cannot be found in the Context, clearly state that: "The requested information could not be found in the uploaded documents." Do NOT attempt to make up or hallucinate answers.
-3. Keep the response natural, professional, and structured.
-4. When referencing information from a specific chunk, append the reference number, e.g., [1] or [2], matching the Context bracket indices.
+        prompt = f"""You are a helpful Knowledge Assistant. Answer the user's question using ONLY the context provided below.
+If the answer is not in the context, say: "The requested information could not be found in the uploaded documents."
+Cite sources using bracket numbers like [1], [2] where relevant.
 
 Context:
 {context_str}
 
-User Query:
-{query}
+Question: {query}
 
 Answer:"""
 
-        # 4. Stream generative responses using Gemini
-        def stream_generator():
+        def _stream():
             try:
-                yield from self._gemini_stream(prompt)
+                yield from self._ollama_stream(prompt)
             except Exception as e:
-                logger.error(f"Error during generation: {str(e)}")
+                logger.error(f"Ollama generation error: {e}")
                 yield f"Generation error: {str(e)}"
-        
-        return stream_generator(), chunks
+
+        return _stream(), chunks
 
     def summarize_document(self, filename: str) -> Generator[str, None, None]:
-        """Loads all chunks for a document and streams a comprehensive summary."""
-        if not self.api_configured:
-            return self._get_no_llm_error_stream()
-            
-        # Retrieve all chunks
+        """Stream a structured summary of a document."""
+        if not self.ollama_available:
+            self.ollama_available = self._check_ollama()
+        if not self.ollama_available:
+            return self._no_llm_stream()
+
         results = self.vector_store.collection.get(where={"source": filename})
         if not results or not results["documents"]:
-            def no_doc_generator():
-                yield "Selected document text could not be retrieved from database."
-            return no_doc_generator()
-            
-        # Concatenate in index order
-        paired = []
-        for text, meta in zip(results["documents"], results["metadatas"]):
-            paired.append((meta.get("chunk_index", 0), text))
-        paired.sort()
-        full_text = "\n".join([item[1] for item in paired])
-        
-        prompt = f"""You are an expert analyst. Provide a comprehensive summary of the document: '{filename}'.
-Organize your output into three Markdown sections:
+            def _no_doc():
+                yield "Document text could not be retrieved from the database."
+            return _no_doc()
+
+        paired = sorted(
+            zip(results["metadatas"], results["documents"]),
+            key=lambda x: x[0].get("chunk_index", 0),
+        )
+        full_text = "\n".join(doc for _, doc in paired)
+
+        prompt = f"""You are an expert analyst. Summarise the document '{filename}' using the content below.
+Structure your response in these three Markdown sections:
 
 # Document Summary
-[Provide a high-level overview of the core subject matter]
+A high-level overview of the subject matter.
 
 # Executive Summary
-[Write a professional overview outlining the context, objectives, and key findings]
+A professional overview of context, objectives, and key findings.
 
 # Key Insights & Takeaways
-[Present a bulleted list of the most critical facts, numbers, dates, or decisions]
+A bullet list of the most critical facts, numbers, dates, or decisions.
 
 Document Content:
 {full_text}
 """
-        
-        def summary_generator():
-            try:
-                yield from self._gemini_stream(prompt)
-            except Exception as e:
-                logger.error(f"Summary generation error: {str(e)}")
-                yield f"Summary generation failed: {str(e)}"
-        
-        return summary_generator()
 
+        def _stream():
+            try:
+                yield from self._ollama_stream(prompt)
+            except Exception as e:
+                logger.error(f"Summary generation error: {e}")
+                yield f"Summary generation failed: {str(e)}"
+
+        return _stream()
