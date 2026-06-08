@@ -1,0 +1,13 @@
+# ACME Corporation - Employee Vacation & Remote Work Policy
+
+## 1. Remote Work Guidelines
+ACME Corporation supports a flexible hybrid work environment. All standard full-time employees are eligible for remote work up to three (3) days per week, subject to approval from their direct supervisor. Core collaboration days in the office are mandatory on Tuesdays and Thursdays. During remote work hours, employees are expected to remain available via Slack and email between 9:00 AM and 5:00 PM EST.
+
+## 2. Annual Vacation Allowance
+Full-time employees receive twenty-two (22) days of paid annual vacation leave per calendar year. Vacation accrues at a rate of approximately 1.83 days per completed month of service. Employees are encouraged to use their vacation time within the year it is accrued. A maximum of five (5) unused vacation days may be carried over into the next calendar year, and these carried-over days must be utilized by March 31st of the new year, or they will be forfeited.
+
+## 3. Requesting Leave
+All vacation requests must be submitted through the HR Portal (http://hr.acme.local) at least two (2) weeks in advance for absences lasting five consecutive working days or longer. For shorter leaves (1-4 days), requests must be logged at least forty-eight (48) hours in advance. Approvals are granted based on team coverage and operational requirements.
+
+## 4. Sick Leave and Medical Policy
+Employees are granted ten (10) paid sick leave days per year for personal illness or family care. A medical certificate from a registered practitioner is strictly required for any sick leave exceeding three (3) consecutive business days.
