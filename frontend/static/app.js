@@ -476,3 +476,8 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     if (window.innerWidth <= 900) closeSidebar();
   });
 });
+
+// ── WELCOME MODAL ─────────────────────────────────────────────────────────────
+document.getElementById('modal-continue').addEventListener('click', () => {
+  document.getElementById('welcome-backdrop').classList.add('hidden');
+});
